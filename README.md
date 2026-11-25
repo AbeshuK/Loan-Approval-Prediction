@@ -141,7 +141,7 @@ Loan-Approval-Prediction/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/Loan-Approval-Prediction.git
+git clone https://github.com/AbeshuK/Loan-Approval-Prediction.git
 cd Loan-Approval-Prediction
 
 # 2. Create and activate a virtual environment
