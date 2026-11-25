@@ -1,6 +1,6 @@
 # Loan Approval Prediction
 
-A binary classification project that predicts whether a loan application will be **approved or rejected**, with a focus on evaluating models correctly on **imbalanced data** (precision, recall, F1) instead of relying on accuracy.
+A binary classification project that predicts whether a loan application will be **approved or rejected**, with a focus on evaluating models correctly on **imbalanced data** (precision, recall, F1 of the Approved class) instead of relying on accuracy.
 
 Built as **Task 1 (Level 2, Machine Learning track)** of the Elevvo Internship Program.
 
@@ -22,16 +22,18 @@ Built as **Task 1 (Level 2, Machine Learning track)** of the Elevvo Internship P
 
 ## Project Overview
 
-**Goal:** Build a classifier that predicts loan approval from applicant and loan features, and evaluate it with metrics that make sense when classes are not balanced.
+**Goal:** Build a classifier that predicts loan approval from applicant and loan features, and evaluate it with metrics that make sense when roughly 5 in 6 applications are rejected.
 
 **What this project covers**
-- Data cleaning (stray whitespace, ID column removal, target encoding)
-- Missing value handling and categorical encoding inside a leak-free pipeline
-- Logistic Regression vs Decision Tree
+- Schema validation and data-quality checks (implausible DTI values, missing values, duplicates)
+- Leak-free preprocessing pipelines: imputation, scaling, one-hot encoding, and TF-IDF for the free-text loan purpose
+- A **feature-set ablation** that decides, using cross-validation, whether the text column and an engineered `loan_to_income` ratio earn a place in the final model
+- Logistic Regression vs Decision Tree vs Gradient Boosting
 - Imbalance handling: `class_weight="balanced"` and SMOTE
-- Hyperparameter tuning with cross-validation
+- Hyperparameter tuning, plus a search for the **simplest tree** that matches the best one
 - Decision-threshold tuning driven by a business objective (precision on approvals)
-- Model interpretation with tree importance and permutation importance
+- Error analysis, permutation importance, and a stress test that removes the dominant feature
+- Evidence that the models **rediscover the hidden approval rules** from training data alone
 
 **Tech stack:** Python 3.12, pandas, scikit-learn, imbalanced-learn, matplotlib, Jupyter
 
@@ -39,36 +41,50 @@ Built as **Task 1 (Level 2, Machine Learning track)** of the Elevvo Internship P
 
 ## Dataset
 
-- **Source:** [Loan-Approval-Prediction-Dataset (Kaggle)](https://www.kaggle.com/) (search for "Loan Approval Prediction Dataset")
-- **Size:** TODO rows x TODO columns
-- **Target:** `loan_status` (Approved = 1, Rejected = 0)
-- **Features:** TODO (e.g. number of dependents, education, self-employment, annual income, loan amount, loan term, CIBIL score, asset values)
-- **Class balance:** TODO% Approved / TODO% Rejected
-- **Missing values:** TODO (state clearly if there were none)
+- **Source:** [Loan approval dataset (Kaggle)](TODO-paste-the-exact-Kaggle-link)
+- **Size:** 24,000 rows x 7 columns
+- **Target:** `Approval` (Approved = 1, Rejected = 0)
+- **Class balance:** 83.6% Rejected (20,067) / 16.4% Approved (3,933), roughly 5 : 1
+- **Missing values:** none
+- **Data-quality notes:** 1,255 rows (5.2%) have a DTI ratio above 100%. Income and credit score are almost perfectly uniformly distributed, which suggests synthetic data.
 
-> The raw CSV is not included in this repository. Download it from Kaggle and place it in the project root as `loan_approval_dataset.csv`.
+| Feature | Type | Description |
+|---|---|---|
+| `Text` | Free text | The applicant's stated loan purpose |
+| `Income` | Numeric | Applicant income |
+| `Credit_Score` | Numeric | Credit score |
+| `Loan_Amount` | Numeric | Requested loan amount |
+| `DTI_Ratio` | Numeric | Debt-to-income ratio (%) |
+| `Employment_Status` | Categorical | Employment status |
+
+**Hidden structure found in EDA:** every approved applicant is employed (all 12,007 unemployed applicants were rejected), has a credit score of at least 551, a DTI of at most 50, and a loan of at most 60% of income. The four rules combined reproduce **all 24,000 labels with zero errors** (precision 1.0, recall 1.0), which indicates synthetic, rule-generated data.
+
+> The raw CSV is not included in this repository. Download it from Kaggle and place it in the project root as `loan_data.csv`.
 
 ---
 
 ## Approach
 
-1. **Cleaning:** stripped whitespace from column names and values, dropped `loan_id`, encoded the target.
-2. **EDA:** class distribution, missing values, feature distributions, correlation with approval, approval rate by category.
-3. **Split:** stratified 80/20 train/test split (`random_state=42`). The test set was used only for final evaluation.
-4. **Preprocessing (inside the pipeline):**
+1. **Validation and cleaning:** normalised column names, stripped whitespace, asserted the expected schema and target values, and ran data-quality checks.
+2. **EDA:** class balance, feature distributions, correlation with approval, and approval rate by credit-score band, DTI band and employment status (to see whether relationships are linear or threshold-like).
+3. **Split:** stratified 80/20 train/test split (`random_state=42`). The test set was used only for final evaluation. Every earlier choice used 5-fold stratified cross-validation on the training set.
+4. **Preprocessing (inside the pipeline, so there is no leakage):**
    - Numeric: median imputation, then standard scaling
    - Categorical: most-frequent imputation, then one-hot encoding
-5. **Models compared** (5-fold stratified cross-validation on the training set):
+   - Text: TF-IDF (300 features, unigrams and bigrams), used only if the ablation justifies it
+5. **Feature-set ablation:** compared `tabular`, `tabular + loan_to_income`, `tabular + text`, and `text only` using two probe models. A richer feature set is adopted only if it improves average CV F1 by more than 0.005.
+6. **Models compared** (5-fold stratified CV on the training set):
 
    | Model family | Variants |
    |---|---|
-   | Dummy baseline | always predict majority class |
+   | Dummy baseline | always predict the majority class |
    | Logistic Regression | plain, `class_weight`, SMOTE |
    | Decision Tree | plain, `class_weight`, SMOTE |
+   | Gradient Boosting (HistGB) | plain |
 
-6. **Tuning:** grid search on the Decision Tree (`max_depth`, `min_samples_leaf`, `criterion`), optimizing F1.
-7. **Threshold tuning:** chose the decision threshold from out-of-fold training predictions, targeting a minimum precision for the Approved class, then maximizing recall.
-8. **Interpretation:** tree feature importance and permutation importance.
+7. **Tuning:** grid search on the Decision Tree (`max_depth`, `min_samples_leaf`, `criterion`) optimizing F1, then the **simplest tree within 0.002 F1** of the best, which is easier to explain.
+8. **Threshold tuning:** applied to Gradient Boosting. The threshold is chosen from out-of-fold training predictions to maximize recall subject to a target precision on Approved, taking the midpoint of the plateau of equally good thresholds.
+9. **Analysis:** error analysis, permutation importance for three models, a stress test without `Credit_Score`, and a check that the tree rediscovers the eligibility cutoffs.
 
 > SMOTE is applied through `imblearn.pipeline.Pipeline`, so it only touches training folds and never leaks into validation or test data.
 
@@ -76,45 +92,105 @@ Built as **Task 1 (Level 2, Machine Learning track)** of the Elevvo Internship P
 
 ## Results
 
-### Cross-validation (training data, 5-fold)
+**Selected feature set:** `tabular + loan_to_income`
+
+### Feature-set ablation (5-fold CV on the training set)
+
+| Feature set | LogReg (balanced) F1 | Tree (depth 8) F1 | Mean F1 | Tree ROC-AUC |
+|---|---|---|---|---|
+| tabular | 0.771 | 0.972 | 0.872 | 0.997 |
+| **tabular + loan_to_income** | **0.781** | **0.9998** | **0.890** | **1.000** |
+| tabular + text | 0.770 | 0.972 | 0.871 | 0.997 |
+| text only | 0.249 | 0.000 | n/a | 0.500 |
+
+### Cross-validation (training data, 5-fold, selected feature set)
 
 | Model | Precision | Recall | F1 | ROC-AUC | PR-AUC |
 |---|---|---|---|---|---|
-| Dummy (always majority) | TODO | TODO | TODO | TODO | TODO |
-| LogReg | TODO | TODO | TODO | TODO | TODO |
-| LogReg + class_weight | TODO | TODO | TODO | TODO | TODO |
-| LogReg + SMOTE | TODO | TODO | TODO | TODO | TODO |
-| Tree | TODO | TODO | TODO | TODO | TODO |
-| Tree + class_weight | TODO | TODO | TODO | TODO | TODO |
-| Tree + SMOTE | TODO | TODO | TODO | TODO | TODO |
+| Tree + class_weight | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| Tree + SMOTE | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| Tree | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| HistGB | 0.997 | 0.997 | 0.997 | 1.000 | 0.999 |
+| LogReg | 0.809 | 0.773 | 0.790 | 0.977 | 0.896 |
+| LogReg + SMOTE | 0.665 | 0.949 | 0.782 | 0.977 | 0.891 |
+| LogReg + class_weight | 0.662 | 0.951 | 0.781 | 0.977 | 0.891 |
+| Dummy (always majority) | 0.000 | 0.000 | 0.000 | 0.500 | 0.164 |
 
 ### Final test-set performance (Approved class)
 
 | Model | Threshold | Precision | Recall | F1 | ROC-AUC | PR-AUC |
 |---|---|---|---|---|---|---|
-| LogReg + class_weight | 0.50 | TODO | TODO | TODO | TODO | TODO |
-| Decision Tree (tuned) | 0.50 | TODO | TODO | TODO | TODO | TODO |
-| LogReg + class_weight (tuned threshold) | TODO | TODO | TODO | TODO | TODO | TODO |
+| LogReg + class_weight | 0.50 | 0.637 | 0.948 | 0.762 | 0.974 | 0.881 |
+| Decision Tree (tuned) | 0.50 | 0.999 | 1.000 | 0.999 | 1.000 | 0.999 |
+| **Decision Tree (simple, depth 4)** | 0.50 | 0.999 | 1.000 | 0.999 | 1.000 | 0.999 |
+| HistGB | 0.50 | 0.996 | 0.996 | 0.996 | 1.000 | 1.000 |
+| HistGB, tuned threshold | ~0 | 0.975 | 1.000 | 0.987 | 1.000 | 1.000 |
 
-**Best tuned Decision Tree parameters:** TODO
+**Best tuned Decision Tree:** `criterion=gini`, `max_depth=4`, `min_samples_leaf=1` (CV F1 0.9998)
+**Simplest near-equivalent tree:** `criterion=gini`, `max_depth=4`, `min_samples_leaf=20`
+
+### Rules rediscovered by the depth-4 tree (trained on the training split only)
+
+| Feature | Threshold learned | Rule found in EDA |
+|---|---|---|
+| `credit_score` | 550.5 | above 550 |
+| `dti_ratio` | 50.02 | at most 50 |
+| `loan_to_income` | 0.60 | at most 0.6 |
+
+A fourth split on `employment_status` (employed only) completes the rule set.
+
+### Precision target vs recall (HistGB, out-of-fold)
+
+| Target precision | Threshold | Recall achieved |
+|---|---|---|
+| 0.90 | ~0.000 | 1.000 |
+| 0.95 | ~0.000 | 1.000 |
+| 0.98 | ~0.000 | 1.000 |
+| 0.99 | 0.001 | 1.000 |
+
+Every target is met at a threshold close to zero with no loss of recall, so the trade-off table is degenerate: the classes are almost perfectly separable.
+
+### Stress test: removing `Credit_Score` (HistGB, 5-fold CV)
+
+| Setup | Precision | Recall | F1 | PR-AUC |
+|---|---|---|---|---|
+| With credit_score | 0.997 | 0.997 | 0.997 | 0.999 |
+| Without credit_score | 0.540 | 0.683 | 0.603 | 0.544 |
 
 ### Visuals
 
-<!-- Save your figures to an images/ folder and uncomment these lines -->
-<!-- ![Confusion Matrix](images/confusion_matrix.png) -->
-<!-- ![Precision-Recall Curve](images/precision_recall_curve.png) -->
-<!-- ![Feature Importance](images/feature_importance.png) -->
+**Class balance and correlations**
+![EDA target and correlation](images/eda_target_and_correlation.png)
+
+**Approval rate by credit score, DTI and employment status**
+![Approval rate by band](images/eda_approval_rate_by_band.png)
+
+**Precision-recall curves (test set)**
+![PR curves](images/pr_curves_test.png)
+
+**Confusion matrix, tuned Decision Tree**
+![Confusion matrix](images/cm_decision_tree_tuned.png)
+
+**How much depth does the tree need?**
+![Tree depth vs F1](images/tree_depth_vs_f1.png)
+
+**Permutation importance (tree, gradient boosting, logistic regression)**
+![Permutation importance](images/permutation_importance.png)
 
 ---
 
 ## Key Findings
 
-- **Best model:** TODO, with F1 of TODO on the test set.
-- **Logistic Regression vs Decision Tree:** TODO (which generalized better, and was the tree overfitting before tuning?).
-- **Effect of imbalance handling:** TODO (did SMOTE or class weights change results meaningfully, or is the imbalance too mild to matter?).
-- **Threshold tuning:** TODO (how recall changed when requiring precision >= TODO).
-- **Most influential features:** TODO (e.g. credit score, loan amount).
-- **Why accuracy alone is misleading:** the dummy baseline already reaches TODO% accuracy without learning anything.
+- **The labels follow four hard eligibility rules** (employed, credit score above 550, DTI at most 50, loan at most 60% of income) that reproduce every label exactly. High model scores therefore reflect rule recovery, not real-world predictive skill.
+- **Best model:** a depth-4 Decision Tree reaches **F1 0.999** (precision 0.999, recall 1.000) on the test set. A tree this shallow is readable by a credit officer, and it matches the best tuned tree exactly.
+- **Rule discovery:** trained on the training split alone, the tree rediscovered the cutoffs (credit score 550.5, DTI 50.02, loan-to-income 0.60) plus the employment split.
+- **Why accuracy alone is misleading:** a model that always predicts "Rejected" reaches **83.6% accuracy** with F1 = 0 for the Approved class.
+- **Feature engineering mattered far more than model tuning:** adding `loan_to_income` raised the depth-8 tree's CV F1 from 0.972 to 0.9998. A tree splits on one column at a time, so it can only approximate a ratio of two columns with a staircase.
+- **Linear vs tree-based models:** Logistic Regression tops out around F1 0.79 (0.76 on test), because the rules are thresholds and conjunctions, not a linear boundary. Gradient boosting reaches 0.997.
+- **The free-text purpose carries no signal:** `text only` models score ROC-AUC 0.50 and PR-AUC about 0.165 (the approval rate), and adding text to the tabular features changes nothing.
+- **Effect of imbalance handling:** class weights and SMOTE did not improve F1 for Logistic Regression. They only moved precision from 0.81 to about 0.66 and recall from 0.77 to about 0.95. The tree was unaffected.
+- **Threshold tuning did not help:** the chosen threshold sat at the edge of the probability range, and on the test set it gave precision 0.975 (below the 0.98 target) and F1 0.987, worse than the default 0.5 (F1 0.996). When labels are nearly noise-free, the precision/recall trade-off barely exists.
+- **Credit score is essential:** removing it drops gradient boosting's F1 from 0.997 to 0.603.
 
 ---
 
@@ -122,11 +198,12 @@ Built as **Task 1 (Level 2, Machine Learning track)** of the Elevvo Internship P
 
 ```
 Loan-Approval-Prediction/
-├── loan_approval_prediction.ipynb   # Full analysis and modeling notebook
+├── loan_approval_prediction.ipynb   # Full analysis and modeling notebook (with outputs)
 ├── requirements.txt                 # Python dependencies
 ├── README.md                        # Project documentation
 ├── .gitignore
-└── images/                          # Saved figures used in this README
+├── images/                          # Figures saved by the notebook
+└── results/                         # Result tables saved by the notebook (CSV)
 ```
 
 ---
@@ -158,12 +235,13 @@ pip install -r requirements.txt
 
 ### Run
 
-1. Download the dataset from Kaggle and save it as `loan_approval_dataset.csv` in the project root.
-2. Launch Jupyter (or open the notebook in VS Code and select the `.venv` kernel):
+1. Download the dataset from Kaggle and save it as `loan_data.csv` in the project root.
+2. Open the notebook and make sure `DATA_PATH = "loan_data.csv"` in the configuration cell.
+3. Launch Jupyter (or open the notebook in VS Code and select the `.venv` kernel):
    ```bash
    jupyter notebook loan_approval_prediction.ipynb
    ```
-3. Run all cells from top to bottom.
+4. Use **Restart and Run All**. Figures are written to `images/` and tables to `results/`.
 
 ### `requirements.txt`
 
@@ -180,21 +258,23 @@ jupyter
 
 ## Limitations
 
-- The dataset is small and likely synthetic or simplified, so results may not transfer to real lending decisions.
-- One dominant feature (such as credit score) can make the problem look easier than it is.
-- No fairness or bias audit was performed. Real credit models must be checked for discrimination across protected groups.
-- Metrics depend on the chosen threshold, which should be set from actual business costs rather than a fixed precision target.
-- Single train/test split plus cross-validation; no external validation set.
+- The approval label is a deterministic function of four features, which indicates **synthetic data**. Very high tree scores reflect rule recovery and will not transfer to real lending, where outcomes are noisy.
+- The idea of the `loan_to_income` feature came from exploratory analysis of the full dataset. No fitted statistics leaked into the test set, but the test rows were not blind to that insight.
+- Imbalance techniques and threshold tuning have limited meaning when labels are noise-free, and the tuned threshold here was unstable.
+- DTI ratios above 100% (5.2% of rows) are unusual and were kept as-is. In practice they would be investigated.
+- **Fairness:** the rule rejects every unemployed applicant, and employment status can act as a proxy for protected characteristics. A real credit model would need a bias audit and legal review.
+- The decision threshold should come from real business costs (a bad approval vs a lost good customer), not a fixed precision target.
+- Single train/test split plus cross-validation on the training set; no external or time-based validation.
 
 ---
 
 ## Future Work
 
-- Try gradient boosting (XGBoost / LightGBM) and compare against the baselines
-- Calibrate predicted probabilities
-- Use a cost-sensitive threshold based on estimated loss from bad approvals vs lost good customers
-- Analyze performance across applicant subgroups
-- Wrap the model in a FastAPI service with Docker (see the MLOps task)
+- Test the pipeline on a real, noisy lending dataset where the trade-offs are meaningful
+- Calibrate predicted probabilities and set a cost-based threshold
+- Validate on out-of-time data and analyze performance across applicant subgroups
+- Compare XGBoost / LightGBM against the baselines
+- Wrap the winning pipeline in a FastAPI service with Docker (see the MLOps task)
 
 ---
 
